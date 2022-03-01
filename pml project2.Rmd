@@ -1,0 +1,198 @@
+---
+title: "pml project"
+author: "SHL"
+date: "2/3/2022"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE,message=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## R Markdown
+
+We seek to predict an exercise 'class' for 20 test cases, 
+given about 19,000 observations with known class.
+
+We begin with some Exploratory data analysis.
+
+Many variable had missing data or were #DIV. All these variables were eliminated. Only variables that had complete records for both the training set and the prediction set were retained. After this step, 52 independent variables remained. 
+
+First take a look at the distribution of class and find that class A is the most frequent class but class distribution is fairly even.
+
+
+
+```{r pml, echo=FALSE, message=FALSE,warning=FALSE}
+ # The normalize function adjusts the data to account for the different
+  # orders of magnitude of gthe data
+
+normalize <- function(x) { 
+return ((x - min(x)) / (max(x) - min(x))) }
+
+normalize2 <- function(x) { 
+    return ((x - mean(x))/sd(x) ) }  
+ 
+
+rangeit <- function(x) {
+return ((max(x) - min(x))) }
+
+flattenCorrMatrix <- function(cormat) {
+  ut <- upper.tri(cormat)
+  c1<-data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut]
+     )
+  return(c1)
+  }
+
+
+
+# Attach needed libraries
+
+library(caret)
+library(dplyr)
+library(corrplot)
+library(ggplot2)
+library(skimr)
+library(tibble)
+library(Hmisc)
+library(tidyverse)
+
+# read in datasets
+# alldata contains both data from training set plus data we need to
+# predict
+# test_pml contains only the cases we need to predict
+# testingr contains the cases we need to predict, but only with the independent variables we are going to use
+
+alldata<-read.csv("c:/Users/Samford/tmpdir/eda/pml-training-adj2.csv")
+trn_only<-alldata[-c(19623:19642),]
+
+
+
+col1<-colnames(alldata[,5:53])
+testingr<-read.csv("c:/Users/Samford/tmpdir/eda/pml-testingr.csv")
+test_pml<-read.csv("c:/Users/Samford/tmpdir/eda/pml-testing-to append.csv")
+
+barplot(table(trn_only$classe),main="Distribution of Classes Training Set")
+par(mfrow=c(1,2))
+# barplot(table(alldata$user_name),main="Distribution of People Training #Set")
+pie(table(alldata$user_name),main="Dist of User Name Training Set")
+pie(table(test_pml$user_name),main="Dist of User Name Predict Set")
+# barplot(table(trn_only$user_name),main="Distribution of User Name  #Training Set")
+# barplot(table(test_pml$user_name),main="Distribution by Name - #Prediction Set")
+```
+
+The set we are to predict has a notably different distribution of names than the training set. This difference is a concern. It may limit the extent to which we can project the accuracy of the model developed with the training set to the prediction set.
+
+
+Then we compare the means of the variables in the training and prediction sets. A t-test is used to compare the means. If the means of the training and prediction sets are significantly different, it may be a sign that the variables are out of scope for purposes of prediction and should not be used. Three variables were eliminated after this screening (yaw_belt, accel_arm_y and gyros_belt_y)  
+
+```{r pml2, echo=FALSE, message=FALSE}
+
+
+print("P-values of Comparison of means of independent variables of Traiing set and prediction set")
+#for (i in 5:53) {test<- t.test(alldata[,i],testingr[,i] ) # #print(test[['p.value']])}
+for (i in 5:53) {test<- t.test(alldata[,i],testingr[,i] ) ;if (test$p.value<.01)   {print(col1[i-4]); print(test[['p.value']]);}}
+
+# all_n contains the normalized data
+# all_n2 contains the normalized data excluding the cases we need to predict
+# classe contains only the classification variable(from training and test data sets)
+# classe_n contains only the classification variable(from  just the training set. This variable is then converted to a data frame
+# all_n2 is the original training set normalized with the classification vatiable
+```
+We see 3 variables where means are significantly different. So we remove the variables yaw_belt, gyros_belt_y and accel_arm_y.
+
+```{r pmla, echo=FALSE, message=FALSE}
+all_n <- as.data.frame(lapply(alldata[4:56], normalize2))
+allminus<-subset(all_n,select=-c(yaw_belt,accel_arm_y,gyros_belt_y))
+all_n<-allminus
+               
+all_n2 <- all_n[-c(19623:19642), ]
+alldataz<-alldata[-c(19623:19642),]
+ta<-table(alldataz$user_name,alldataz$classe)
+tb<-ta/nrow(alldataz)
+
+print("People by Class")
+ta
+options(digits=3)
+print("Percent people by class")
+print(tb*100)
+```
+The first user has most of the use. This may bias the model. 
+
+```{r pmlb, echo=FALSE,message=FALSE }
+classe<-as.data.frame(alldata[,57])
+classe_n<-classe[-c( 19623:19642),]
+classe_n<-as.data.frame(classe_n)
+all_n2<-cbind(all_n2,classe_n)
+```
+Next we test for intercorrelation of the independent variables. If there is a high level of intercorrelation, we would want to remove some of the variables with high intercorrelation. 
+
+```{r pmlc, echo=FALSE, message=FALSE}
+# check for high correlations in the independent variables.
+corrm <- rcorr(as.matrix(all_n)) 
+corrsum<-flattenCorrMatrix(corrm$r)
+cor_a<- filter(corrsum,abs(cor)>.95)
+cor_a1<-cor_a[order(cor_a$cor),]
+print("Variables with highest level of correlation")
+head(cor_a1)
+```
+
+We test several models, including lvq, gbm, and rf. Model knn was finally selected because it has high accuracy on both the training and test data sets. rf also had high accuracy, but running it has hanging up my computer and that made it impractical to use.
+
+```{r pmld, echo=FALSE,message=FALSE }
+# train_control is set to method cv, with 5 folds
+# The knn method is used on the training set with all variables in the model
+ train_control <- trainControl(method = "cv",number = 5)
+inTrain = createDataPartition(all_n2$classe_n, p = 8/10)[[1]]
+train01 = all_n2[inTrain, ]
+test01 = all_n2[-inTrain, ]
+
+
+model <- train(classe_n~., data = train01,method = "knn", trControl = train_control)
+```
+These are the Confusion matrices
+
+```{r pmlb1, echo=FALSE,message=FALSE}
+
+# The confusion matrix for the training set is generated
+
+ans3<-predict(model,train01)
+x<-train01
+x$classe<-as.factor(x$classe)
+ct0<-confusionMatrix(ans3,x$classe)
+print("Confusion Matrix for Train set")
+ct0$table
+ct0$overall
+
+# The Confusion matrix for the test set is generated
+
+pred1<-predict(model,test01)
+
+y<-test01
+y$classe<-as.factor(y$classe)
+print("Confusion Matrix for Test set")
+
+ct<-confusionMatrix(pred1,y$classe)
+ct$table
+ct$overall
+```
+Additional testing was dome by using a test set consisting of one individual and a training set consisting of all other individuals. This procedure led to significantly worse results for the test set. This difference suggests that the identity of the individual is an important factor in determining the classification. 
+
+I developed a model based on 6 sub-models, with one for each individual. However, this approach did not provide significantly better results and was not used. An additional reason for abandoning this multi-model approach is that it would limit the application of the model to just these six individuals. 
+
+
+
+The predictions from this model for the 20 test cases are:
+```{r pmlbf, echo=FALSE,message=FALSE}
+# The predictions are made
+pred2<-predict(model,test_pml)
+
+pred2
+
+
+```
+The accuracy of the Confusion Matrices for both the Training and Test sets were in the 95% to 99% range, the accuracy of the prediction set is likely lower than that. When I developed models base on 5 of the names and used those models to predict the sixth, I got Accuracies on the sixth set in the range of 50% to 60%. Consequently, I believe the accuracy of the Prediction set for this exercise will be on the order of 60%. 
